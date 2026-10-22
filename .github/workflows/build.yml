@@ -1,0 +1,36 @@
+name: Build & Push Image
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'image/**'
+      - 'requirements.txt'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: image/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/fast-remote-gpu:latest
+            ghcr.io/${{ github.repository_owner }}/fast-remote-gpu:${{ github.sha }}

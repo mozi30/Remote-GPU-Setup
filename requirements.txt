@@ -1,0 +1,40 @@
+# Fast-remote-gpu training stack (ML + CV + visualization)
+# torch/torchvision already provided by the base image.
+
+# Core ML
+transformers
+datasets
+accelerate
+peft
+trl
+bitsandbytes
+safetensors
+tokenizers
+huggingface_hub
+
+# Computer vision
+opencv-python-headless
+timm
+ultralytics
+albumentations
+pillow
+scikit-image
+
+# Data / viz
+numpy
+pandas
+polars
+scikit-learn
+scipy
+matplotlib
+seaborn
+plotly
+tensorboard
+wandb
+tqdm
+
+# Generative / optional
+diffusers
+
+# Tooling
+jupyterlab
