@@ -26,6 +26,13 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
 COPY requirements.txt /tmp/requirements.txt
 RUN uv pip install --system --no-cache -r /tmp/requirements.txt
 
+# Ship requirements + uv-venv helper + auto-activate hook (venv lives on /workspace)
+RUN mkdir -p /opt/fast-remote-gpu && cp /tmp/requirements.txt /opt/fast-remote-gpu/requirements.txt
+COPY scripts/uv-venv.sh /opt/fast-remote-gpu/uv-venv.sh
+COPY image/bashrc-uv /opt/fast-remote-gpu/bashrc-uv
+RUN chmod +x /opt/fast-remote-gpu/uv-venv.sh && \
+    echo '. /opt/fast-remote-gpu/bashrc-uv' >> /root/.bashrc
+
 # SSH: key-only root login
 RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \
     sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
@@ -38,3 +45,4 @@ WORKDIR /workspace
 EXPOSE 22
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+

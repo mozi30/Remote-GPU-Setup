@@ -12,6 +12,11 @@ if [ -n "${AUTHORIZED_KEY:-}" ]; then
   chmod 700 /root/.ssh
 fi
 
+# Build/refresh the uv venv on the persistent workspace (fast no-op if present)
+if command -v uv >/dev/null 2>&1 && [ -x /opt/fast-remote-gpu/uv-venv.sh ]; then
+  bash /opt/fast-remote-gpu/uv-venv.sh || echo "!! uv-venv setup failed (continuing)"
+fi
+
 # Start sshd in foreground style and keep container alive
 mkdir -p /run/sshd
 /usr/sbin/sshd -D -e &
@@ -23,3 +28,4 @@ nvidia-smi 2>/dev/null || echo "nvidia-smi not available"
 
 # Wait on sshd so container stays up
 wait $SSHD_PID
+

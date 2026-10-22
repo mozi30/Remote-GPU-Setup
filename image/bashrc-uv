@@ -1,0 +1,4 @@
+# Sourced by root's interactive shells: auto-activate the uv venv if present.
+if [ -f /workspace/.venv/bin/activate ]; then
+  . /workspace/.venv/bin/activate
+fi
