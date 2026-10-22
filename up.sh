@@ -50,16 +50,37 @@ echo ">> provisioning via $PROVIDER (mode=$MODE, max=\$$MAX_PRICE/hr)"
 read -r INST_ID HOST PORT < <(head -n1 "$STATE_FILE")
 
 echo ">> waiting for SSH on $HOST:$PORT ..."
+SSH_OK=0
 for i in $(seq 1 60); do
   if ssh -i "$SSH_KEY" -p "$PORT" -o StrictHostKeyChecking=no \
-         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+         -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=5 \
          root@"$HOST" true 2>/dev/null; then
-    echo ">> SSH is up"
-    break
+    SSH_OK=1; echo ">> SSH is up"; break
   fi
   sleep 5
-  [ "$i" = 60 ] && { echo "!! timed out waiting for SSH"; exit 1; }
 done
+if [ "$SSH_OK" != "1" ]; then
+  echo "!! timed out waiting for SSH on $HOST:$PORT"
+  echo "   debug: ssh -i $SSH_KEY -p $PORT root@$HOST -v"
+  echo "   instance kept running: $INST_ID  (destroy with ./down.sh)"
+  exit 1
+fi
+
+# ---- ensure /workspace on the box; optionally build a venv (USE_VENV=1) ----
+# Default (USE_VENV unset/0): use the image's SYSTEM python — shortest boot,
+# driver-matched torch already installed. Only build a venv when asked.
+USE_VENV="${USE_VENV:-0}"
+echo ">> ensuring /workspace on remote (venv=${USE_VENV})..."
+ssh -i "$SSH_KEY" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o BatchMode=yes root@"$HOST" "mkdir -p /workspace && echo '>> /workspace ready'" 2>/dev/null || \
+    echo ">> note: could not create /workspace (continuing)"
+
+if [ "$USE_VENV" = "1" ]; then
+  echo ">> building /workspace/.venv (reuses image torch; never reinstalls it if present)"
+  ssh -i "$SSH_KEY" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o BatchMode=yes root@"$HOST" "bash /opt/fast-remote-gpu/uv-venv.sh" 2>/dev/null || \
+      echo ">> note: venv setup failed (continuing; use system python)"
+fi
 
 # ---- write ssh config entry ----
 CONF="$HOME/.ssh/config"

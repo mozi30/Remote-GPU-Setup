@@ -33,6 +33,12 @@ COPY image/bashrc-uv /opt/fast-remote-gpu/bashrc-uv
 RUN chmod +x /opt/fast-remote-gpu/uv-venv.sh && \
     echo '. /opt/fast-remote-gpu/bashrc-uv' >> /root/.bashrc
 
+# /workspace guaranteed to exist in the image itself (Vast bypasses ENTRYPOINT,
+# so we cannot rely on the entrypoint to create it). Pre-create dirs + cache.
+RUN mkdir -p /workspace/.cache/huggingface /workspace/.cache/torch \
+             /workspace/.cache/uv /workspace/checkpoints /workspace/runs && \
+    touch /workspace/.keep
+
 # SSH: key-only root login
 RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \
     sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
