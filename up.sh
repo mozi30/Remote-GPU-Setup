@@ -108,3 +108,16 @@ echo ">> done. connect with:"
 echo "   ssh $SSH_HOST_ALIAS"
 echo "   code --remote ssh-remote+$SSH_HOST_ALIAS /workspace"
 echo "   ./ssh.sh   (also forwards tensorboard/jupyter ports)"
+
+# ---- auto-open VS Code on the remote workspace (OPEN_VSCODE=1, default on) ----
+OPEN_VSCODE="${OPEN_VSCODE:-1}"
+if [ "$OPEN_VSCODE" = "1" ]; then
+  if command -v code >/dev/null 2>&1; then
+    echo ">> opening VS Code on ${SSH_HOST_ALIAS}:/workspace ..."
+    code --remote "ssh-remote+${SSH_HOST_ALIAS}" /workspace >/dev/null 2>&1 || \
+      echo "   (code CLI failed; open manually: code --remote ssh-remote+${SSH_HOST_ALIAS} /workspace)"
+  else
+    echo ">> 'code' CLI not on PATH; skipping auto-open."
+    echo "   In VS Code: Ctrl+Shift+P → 'Shell Command: Install code command in PATH', then rerun."
+  fi
+fi
