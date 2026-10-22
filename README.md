@@ -14,8 +14,8 @@ rented box. One command up, one command down.
 git clone <your-repo-url> fast-remote-gpu
 cd fast-remote-gpu
 cp env.example.txt .env       # add your API key(s)
-./up.sh                       # rents cheapest matching GPU, waits for SSH, prints VS Code cmd
-code --remote ssh-remote+fast-remote-gpu /workspace
+./up.sh                       # rents cheapest matching GPU, waits for SSH, opens VS Code
+./connect.sh                  # re-attach to a running box later (no new rental)
 ./down.sh                     # destroys the instance, stops billing
 ```
 
@@ -94,6 +94,9 @@ cp .env.example .env
 | `MAX_PRICE` | max $/hr you'll pay |
 | `DISK_GB` | workspace volume size |
 | `SSH_KEY` | private key path (auto-generated on first run if missing) |
+| `VAST_SSH_KEY` | `auto` = auto-register your key on your Vast account each run (default); `skip` = don't; or a key path |
+| `USE_VENV` | `0` = use image's system python (default, shortest boot); `1` = also make `/workspace/.venv` (reuses image torch) |
+| `OPEN_VSCODE` | `1` = auto-open VS Code on the remote workspace when up.sh finishes |
 
 ### GPU allow-list default
 
@@ -109,13 +112,19 @@ Cheapest available match wins. Cheap cards (5060 Ti/5070/5080) are mostly on
 ## 3. Daily use
 
 ```bash
-./up.sh                      # rent + wait for SSH + write ~/.ssh/config
+./up.sh                      # rent + wait for SSH + auto-open VS Code on /workspace
+./connect.sh                 # re-attach to a RUNNING box (no rental) + open VS Code
 ./ssh.sh                     # shell + forwards tensorboard/jupyter ports
 ./sync.sh ./my-project       # rsync local project -> /workspace/my-project
 ./down.sh                    # destroy instance (stops billing)
 ```
 
-Connect from VS Code: **Remote-SSH → fast-remote-gpu → /workspace**.
+- `up.sh` rents, sets up, and **opens a new VS Code window** on `fast-remote-gpu:/workspace`
+  (disable with `OPEN_VSCODE=0` in `.env`).
+- `connect.sh` is for **resuming**: it reads `.instance`, (on Vast) checks the real
+  status and can **start a stopped instance**, re-writes `~/.ssh/config`, and reopens
+  VS Code — without renting anything new.
+- Connect manually any time from VS Code: **Remote-SSH → fast-remote-gpu → /workspace**.
 
 ### Package management with `uv` (available on the remote)
 
@@ -169,14 +178,20 @@ Full ML / CV / visualization stack (edit `requirements.txt`):
 ```
 fast-remote-gpu/
 ├─ env.example.txt          # config template (copy -> .env)
-├─ up.sh  down.sh  ssh.sh
+├─ up.sh  connect.sh  down.sh  ssh.sh
 ├─ backends/vast.sh  backends/runpod.sh
 ├─ image/Dockerfile  image/entrypoint.sh
-├─ scripts/sync.sh  scripts/startup.sh
+├─ scripts/sync.sh  scripts/startup.sh  scripts/uv-venv.sh
 ├─ requirements.txt
 ├─ .github/workflows/build.yml
 └─ README.md
 ```
+
+> Note: on Vast the container's `ENTRYPOINT` is replaced by Vast's own `/.launch`
+> bootstrap, so the image's entrypoint (venv/workspace setup) may not run. That is
+> why `/workspace` is pre-created in the image itself and setup also happens in
+> `up.sh` after SSH. Boot then uses the image's **system python** (driver-matched
+> torch), with no install step.
 
 ---
 
