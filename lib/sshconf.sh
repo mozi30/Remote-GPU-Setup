@@ -93,10 +93,18 @@ sshconf_write() {
     ' "$conf" > "${conf}.tmp.$$" && mv "${conf}.tmp.$$" "$conf"
   fi
 
-  # Windows OpenSSH: UserKnownHostsFile NUL ; POSIX: /dev/null
+  # POSIX ssh: /dev/null. Windows ssh.exe has no /dev/null, and "NUL" is wrong
+  # too: Git-Bash's ssh treats it as a relative FILENAME, so every ssh call
+  # from a project directory leaves a junk file named "NUL" behind. Point at a
+  # real known_hosts next to the identity file instead — both Windows ssh.exe
+  # and Git-Bash ssh understand "C:/Users/you/.ssh/known_hosts".
   local knownhosts="/dev/null"
   case "$identity" in
-    [A-Za-z]:[\\/]*) knownhosts="NUL" ;;
+    [A-Za-z]:[\\/]*)
+      # normalize C:\a\b -> C:/a/b so the known_hosts path stays consistent
+      local idir; idir="$(dirname "$identity")"; idir="${idir//\\//}"
+      [ "$idir" = "." ] || knownhosts="${idir}/known_hosts"
+      ;;
   esac
 
   {
