@@ -4,6 +4,9 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; cd "$HERE"
 
+# shellcheck source=lib/sshconf.sh
+. "$HERE/lib/sshconf.sh"
+
 # ---- load config ----
 if [ ! -f .env ]; then
   echo "!! .env not found (needed for SSH_KEY / STATE_FILE / alias)."
@@ -76,30 +79,25 @@ else
   exit 1
 fi
 
-# ---- ensure ~/.ssh/config host entry matches current instance ----
-CONF="$HOME/.ssh/config"
-touch "$CONF"; chmod 600 "$CONF"
-awk -v host="$SSH_HOST_ALIAS" '
-  $1=="Host" && $2==host {skip=1; next}
-  /^Host / {skip=0}
-  !skip {print}
-' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
-cat >> "$CONF" <<EOF
+# ---- ensure ssh config matches current instance (POSIX + Windows/VS Code) ----
+POSIX_CONF="$HOME/.ssh/config"
+sshconf_write "$POSIX_CONF" "$SSH_HOST_ALIAS" "$HOST" "$PORT" "$SSH_KEY"
+echo ">> wrote $POSIX_CONF for host '$SSH_HOST_ALIAS'"
 
-Host $SSH_HOST_ALIAS
-    HostName $HOST
-    Port $PORT
-    User root
-    IdentityFile $SSH_KEY
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    ServerAliveInterval 30
-EOF
-echo ">> ~/.ssh/config updated for host '$SSH_HOST_ALIAS'"
+if sshconf_is_windows; then
+  WCONF="$(sshconf_win_config_path)"
+  WINKEY="$(winpath "$SSH_KEY")"
+  sshconf_write "$WCONF" "$SSH_HOST_ALIAS" "$HOST" "$PORT" "$WINKEY"
+  echo ">> wrote $WCONF (VS Code)  IdentityFile=$WINKEY"
+fi
 
 # ---- ensure /workspace exists (in case it was a pre-.keep image) ----
-ssh "${KEY_OPT[@]}" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o BatchMode=yes root@"$HOST" "mkdir -p /workspace" 2>/dev/null || true
+ws_out="$(ssh "${KEY_OPT[@]}" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o BatchMode=yes root@"$HOST" 'mkdir -p /workspace && ls -ld /workspace' 2>&1 || true)"
+case "$ws_out" in
+  *" /workspace"*) echo ">> /workspace ready: $(printf '%s' "$ws_out" | tail -n1)" ;;
+  *) echo "!! could not create /workspace: $ws_out" ;;
+esac
 
 # ---- open VS Code (or print how) ----
 echo ">> you can also: ssh $SSH_HOST_ALIAS   |   ./ssh.sh (ports)"

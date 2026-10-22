@@ -5,6 +5,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# shellcheck source=lib/sshconf.sh
+. "$HERE/lib/sshconf.sh"
+
 # ---- load config ----
 if [ ! -f .env ]; then
   echo "!! .env not found. Copy the template from README and fill in your keys:"
@@ -52,9 +55,12 @@ read -r INST_ID HOST PORT < <(head -n1 "$STATE_FILE")
 echo ">> waiting for SSH on $HOST:$PORT ..."
 SSH_OK=0
 for i in $(seq 1 60); do
-  if ssh -i "$SSH_KEY" -p "$PORT" -o StrictHostKeyChecking=no \
-         -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=5 \
-         root@"$HOST" true 2>/dev/null; then
+  # Verify we get real output back, not just a zero exit code: some providers
+  # accept TCP but drop auth, which used to make this loop print "SSH is up".
+  out="$(ssh -i "$SSH_KEY" -p "$PORT" -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=5 \
+              root@"$HOST" 'echo READY' 2>/dev/null || true)"
+  if [ "$out" = "READY" ]; then
     SSH_OK=1; echo ">> SSH is up"; break
   fi
   sleep 5
@@ -71,9 +77,19 @@ fi
 # driver-matched torch already installed. Only build a venv when asked.
 USE_VENV="${USE_VENV:-0}"
 echo ">> ensuring /workspace on remote (venv=${USE_VENV})..."
-ssh -i "$SSH_KEY" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o BatchMode=yes root@"$HOST" "mkdir -p /workspace && echo '>> /workspace ready'" 2>/dev/null || \
-    echo ">> note: could not create /workspace (continuing)"
+# Hard requirement: VS Code opens /workspace, so fail loudly instead of
+# continuing with a directory that does not exist.
+ws_out="$(ssh -i "$SSH_KEY" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o BatchMode=yes root@"$HOST" 'mkdir -p /workspace && ls -ld /workspace' 2>&1 || true)"
+case "$ws_out" in
+  *" /workspace"*) echo ">> /workspace ready: $(printf '%s' "$ws_out" | tail -n1)" ;;
+  *)
+    echo "!! could not create /workspace on $HOST:$PORT"
+    echo "   output: $ws_out"
+    echo "   instance kept running: $INST_ID  (debug with ./ssh.sh, destroy with ./down.sh)"
+    exit 1
+    ;;
+esac
 
 if [ "$USE_VENV" = "1" ]; then
   echo ">> building /workspace/.venv (reuses image torch; never reinstalls it if present)"
@@ -83,25 +99,20 @@ if [ "$USE_VENV" = "1" ]; then
 fi
 
 # ---- write ssh config entry ----
-CONF="$HOME/.ssh/config"
-touch "$CONF"; chmod 600 "$CONF"
-# remove old block
-awk -v host="$SSH_HOST_ALIAS" '
-  $1=="Host" && $2==host {skip=1; next}
-  /^Host / {skip=0}
-  !skip {print}
-' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
-cat >> "$CONF" <<EOF
+# VS Code on Windows reads C:\Users\<you>\.ssh\config with Windows OpenSSH,
+# which cannot parse POSIX paths like /c/Users/... — so the IdentityFile there
+# must be Windows-style. We always write the POSIX config for this shell, and
+# additionally the Windows config when it is a different file.
+POSIX_CONF="$HOME/.ssh/config"
+sshconf_write "$POSIX_CONF" "$SSH_HOST_ALIAS" "$HOST" "$PORT" "$SSH_KEY"
+echo ">> wrote $POSIX_CONF  IdentityFile=$SSH_KEY"
 
-Host $SSH_HOST_ALIAS
-    HostName $HOST
-    Port $PORT
-    User root
-    IdentityFile $SSH_KEY
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    ServerAliveInterval 30
-EOF
+if sshconf_is_windows; then
+  WCONF="$(sshconf_win_config_path)"
+  WINKEY="$(winpath "$SSH_KEY")"
+  sshconf_write "$WCONF" "$SSH_HOST_ALIAS" "$HOST" "$PORT" "$WINKEY"
+  echo ">> wrote $WCONF (VS Code)  IdentityFile=$WINKEY"
+fi
 
 echo ""
 echo ">> done. connect with:"
