@@ -12,9 +12,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # System deps + sshd + tooling
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        openssh-server git tmux htop rsync nano curl ca-certificates \
+        openssh-server git tmux htop rsync nano curl ca-certificates unzip \
         build-essential libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
+
+# rclone for the gpu-backpack R2 sync (the tool installs it at boot if missing,
+# baking it in just saves those seconds)
+RUN curl -fsSL -o /tmp/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip && \
+    unzip -q /tmp/rclone.zip -d /tmp && \
+    install -m 0755 /tmp/rclone-*-linux-amd64/rclone /usr/local/bin/rclone && \
+    rm -rf /tmp/rclone* && rclone version | head -1
 
 # uv (system-wide so it's on PATH for ssh + VS Code terminals)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \

@@ -1,4 +1,6 @@
 .env
+*.exe
+dist/
 .instance
 *.pem
 .venv/

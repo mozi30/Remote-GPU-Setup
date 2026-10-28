@@ -1,22 +1,17 @@
+# gpu-backpack
 
-# fast-remote-gpu
+Rent a cheap NVIDIA GPU on **Vast.ai** (RunPod fallback), work on it from **VS Code
+Remote-SSH**, and keep your workspace in a **Cloudflare R2** bucket so destroying the
+instance never loses your files.
 
+One Windows executable, no Git-Bash / Python / `vastai` CLI needed:
 
-
-
-Rent a cheap NVIDIA GPU (Vast.ai primary, RunPod fallback) and get a ready-to-train
-environment over **VS Code Remote-SSH** in a couple of minutes.
-
-Your local machine (even an AMD card) is just the editor. All compute runs on the
-rented box. One command up, one command down.
-
-```bash
-git clone <your-repo-url> fast-remote-gpu
-cd fast-remote-gpu
-cp env.example.txt .env       # add your API key(s)
-./up.sh                       # rents cheapest matching GPU, waits for SSH, opens VS Code
-./connect.sh                  # re-attach to a running box later (no new rental)
-./down.sh                     # destroys the instance, stops billing
+```
+1  Start GPU & Pull Workspace       (or "Reconnect" when a GPU is running)
+2  Force Backup to R2 Now
+3  Backup & Destroy GPU
+4  R2 Files (upload / download / restore from trash)
+5  Settings (API keys, GPU wishlist, min internet speed)
 ```
 
 ---
@@ -24,183 +19,152 @@ cp env.example.txt .env       # add your API key(s)
 ## How it works
 
 ```
- local (AMD box)                     rented NVIDIA box
- ┌───────────────────┐   up.sh      ┌──────────────────────────┐
- │ VS Code           │ ───────────▶ │ container image (GHCR)   │
- │  Remote-SSH ──────┼── ssh ─────▶ │  sshd + CUDA + PyTorch   │
- │  (edits code)     │              │  uv + /workspace (volume)│
- └───────────────────┘   down.sh    └──────────────────────────┘
+ PC (gpu-backpack.exe)                  rented GPU box                    Cloudflare R2
+ ┌──────────────────────┐  Vast API    ┌───────────────────────────┐    ┌──────────────────┐
+ │ menu, settings, keys │ ───────────▶ │ image: CUDA 12.8 torch, uv│    │ <prefix>/        │
+ │ state.json (crash    │  ssh.exe     │ /opt/backpack/*.sh        │◀──▶│   workspace/     │
+ │   recovery)          │ ───────────▶ │ /workspace  ── autosave ──┼───▶│   trash/<time>/  │
+ │ VS Code Remote-SSH   │ ───────────▶ │   (every 12 min, on box)  │    │   lock.json      │
+ └──────────────────────┘              └───────────────────────────┘    └──────────────────┘
 ```
 
-- `up.sh` asks the backend (Vast or RunPod) for the **cheapest offer** matching your
-  GPU allow-list + price cap + mode, starts your image, waits for SSH, and writes an
-  entry to `~/.ssh/config` as host **`fast-remote-gpu`**.
-- You connect via **VS Code Remote-SSH** (host `fast-remote-gpu`) or `./ssh.sh`.
-- `/workspace` lives on a **persistent volume** so code, datasets, HF cache and
-  checkpoints survive stop/start (and spot preemption).
-- `down.sh` destroys the instance so billing stops.
+**Start**
+1. Searches Vast for the cheapest offer in your GPU wishlist that also meets the
+   minimums: download ≥ 500 Mbps, upload ≥ 500 Mbps, reliability ≥ 0.98,
+   ≥ 1 direct port (direct SSH, no proxy), driver ≥ CUDA 12.8. All configurable.
+2. Rents it, labels it `gpu-backpack`, and **saves the instance ID locally right away**.
+3. Waits for SSH, installs the sync scripts to `/opt/backpack` (outside `/workspace`).
+4. **Pulls** `R2:<prefix>/workspace` → `/workspace` with rclone.
+5. Rebuilds Python environments with `uv` (envs are never synced, see below).
+6. Starts the **autosave loop on the box** — it keeps running if your PC sleeps or the
+   tool is closed.
+7. Opens VS Code on `gpu-backpack:/workspace`.
 
----
+**Backup & Destroy** — stops autosave → final push → `rclone check` verifies every file
+is in R2 → only then destroys the instance. If anything fails the GPU is **not**
+destroyed; you choose: retry, download `/workspace` to your PC over SSH, keep it
+running, or destroy anyway (requires typing `DESTROY`).
 
-## Prerequisites
+**Crash recovery** — reopening the exe finds the tracked instance and offers
+Reconnect / Backup & Destroy. A stopped (outbid) interruptible instance can be
+restarted first. Labelled instances the PC lost track of are offered for adoption.
 
-- A **Vast.ai** account and/or **RunPod** account + API key.
-- A **GitHub** account (for the free GHCR image registry).
-- **bash** — use WSL or Git-Bash on Windows.
-- `docker` locally only if you build the image yourself (otherwise GitHub Actions does it).
-- VS Code + the **Remote - SSH** extension.
+### Safety rules built in
 
----
-
-## 1. Set up the image (once)
-
-The training image is built and pushed to **GHCR automatically** by GitHub Actions
-on every push to `main` (`.github/workflows/build.yml`).
-
-1. Push this repo to GitHub.
-2. Actions → "Build & Push Image" → image appears at
-   `ghcr.io/<your-github-username>/fast-remote-gpu:latest`.
-3. Make it **public** (or set registry creds): GitHub → profile → Packages →
-   `fast-remote-gpu` → Package settings → Change visibility → Public.
-
-> Private image? set `GHCR_USER` + `GHCR_TOKEN` (token needs `read:packages`) in `.env`.
-
-Manual build/push alternative:
-
-```bash
-echo "$GH_TOKEN" | docker login ghcr.io -u <your-github-username> --password-stdin
-docker build -t ghcr.io/<your-github-username>/fast-remote-gpu:latest ./image
-docker push ghcr.io/<your-github-username>/fast-remote-gpu:latest
-```
-
-The base is `pytorch/pytorch:*-cuda12.8*` so **Blackwell (RTX 50-series)** works.
-Older cu12x builds will NOT run on 50-series cards.
-
----
-
-## 2. Configure `.env`
-
-```bash
-cp .env.example .env
-```
-
-| Var | Meaning |
+| Risk | Protection |
 |---|---|
-| `PROVIDER` | `vast` or `runpod` (Vast primary by default) |
-| `VAST_API_KEY` / `RUNPOD_API_KEY` | provider API keys |
-| `IMAGE` | `ghcr.io/<you>/fast-remote-gpu:latest` |
-| `MODE` | `interruptible` (cheap, preemptible) or `on_demand` (stable) |
-| `GPU_NAMES` | comma-separated allow-list, cheapest match wins |
-| `MAX_PRICE` | max $/hr you'll pay |
-| `DISK_GB` | workspace volume size |
-| `SSH_KEY` | private key path (auto-generated on first run if missing) |
-| `VAST_SSH_KEY` | `auto` = auto-register your key on your Vast account each run (default); `skip` = don't; or a key path |
-| `USE_VENV` | `0` = use image's system python (default, shortest boot); `1` = also make `/workspace/.venv` (reuses image torch) |
-| `OPEN_VSCODE` | `1` = auto-open VS Code on the remote workspace when up.sh finishes |
-
-### GPU allow-list default
-
-```
-RTX 5060 Ti,RTX 5070,RTX 5070 Ti,RTX 5080,RTX 5090,RTX 4090,RTX 4080 SUPER,RTX 4080,RTX 3090
-```
-
-Cheapest available match wins. Cheap cards (5060 Ti/5070/5080) are mostly on
-**Vast**, often **interruptible** — great for training if you checkpoint.
+| Pull from R2 fails, empty `/workspace` gets pushed and wipes R2 | Pushing is refused on a box until a pull completed there (`/opt/backpack/hydrated`) |
+| Sync deletes or overwrites files in R2 | Old versions move to `trash/<timestamp>/` (restorable from menu 4); kept 14 days |
+| Accidental mass deletion | Max 500 deletions per sync; larger needs your confirmation |
+| Final backup fails | Instance is kept; alert + choices; never auto-destroyed |
+| Two GPUs writing the same workspace | `lock.json` in R2; warns before a second session starts |
+| Tool closed / PC rebooted | `state.json` written at rent time; recovery on next launch |
 
 ---
 
-## 3. Daily use
+## Setup
 
-```bash
-./up.sh                      # rent + wait for SSH + auto-open VS Code on /workspace
-./connect.sh                 # re-attach to a RUNNING box (no rental) + open VS Code
-./ssh.sh                     # shell + forwards tensorboard/jupyter ports
-./sync.sh ./my-project       # rsync local project -> /workspace/my-project
-./down.sh                    # destroy instance (stops billing)
+### 1. Cloudflare R2
+1. Cloudflare dashboard → R2 → **Create bucket** (e.g. `gpu-workspace`).
+2. R2 → **Manage API tokens** → Create token → *Object Read & Write*,
+   **limited to that one bucket**. Note the Access Key ID, Secret, and your Account ID.
+   (The token is copied to the rented box for rclone, so keep it bucket-scoped.)
+
+### 2. The image (once)
+GitHub Actions builds `image/` to `ghcr.io/<you>/fast-remote-gpu:latest` on push
+(`.github/workflows/build.yml`). Make the package **public** (GitHub → Packages →
+Package settings). The image now also contains rclone.
+
+### 3. Get the exe
+- Download `gpu-backpack.exe` from the Actions run / GitHub release
+  (`.github/workflows/exe.yml`), or build it:
+  ```bash
+  go build -trimpath -ldflags "-s -w" -o dist/gpu-backpack.exe ./cmd/backpack
+  ```
+- Run it. On first launch it imports an old `.env` from the current folder if present,
+  then shows the settings form (Vast key, R2 details, wishlist, minimum speeds…).
+- Settings → *Test connections* shows how many Vast offers match your filters.
+
+Requires Windows OpenSSH (built into Windows 10/11) and VS Code with the
+**Remote - SSH** extension and the `code` command on PATH.
+
+---
+
+## What gets synced
+
+Everything in `/workspace` (code, `checkpoints/`, `runs/`, …) **except** these default
+excludes (rclone patterns, editable in Settings):
+
+```
+.venv/**   .cache/**   __pycache__/**   node_modules/**   .ipynb_checkpoints/**   /data/**
 ```
 
-- `up.sh` rents, sets up, and **opens a new VS Code window** on `fast-remote-gpu:/workspace`
-  (disable with `OPEN_VSCODE=0` in `.env`).
-- `connect.sh` is for **resuming**: it reads `.instance`, (on Vast) checks the real
-  status and can **start a stopped instance**, re-writes `~/.ssh/config`, and reopens
-  VS Code — without renting anything new.
-- Connect manually any time from VS Code: **Remote-SSH → fast-remote-gpu → /workspace**.
+`x/**` = a folder named x anywhere; `/x/**` = only the top-level `/workspace/x`.
+Put datasets in `/workspace/data` and re-download them per session.
 
-### Package management with `uv` (available on the remote)
+## Python environments
 
-The full stack is baked into the image, but `uv` is installed system-wide so you can
-add things fast without rebuilding:
+Rebuilt on every new box by `envsetup.sh`, per project folder (up to 3 levels deep):
 
-```bash
-uv pip install <package>          # install into the active env
-uv pip install -r requirements.txt
-uv venv                           # create a fresh venv in a project
-uv add <package>                  # manage a project's pyproject.toml
-uvx <tool>                        # run a one-off tool in an ephemeral env
-```
+| Project has | What happens |
+|---|---|
+| `uv.lock` | `uv sync` — isolated env, exact lockfile, installs its own torch (needs the cu128 index in `pyproject.toml` for RTX 50-series) |
+| only `requirements.txt` | `.venv` with `--system-site-packages` on top of the image's CUDA 12.8 torch; torch lines are skipped. Seconds. |
+| only `pyproject.toml` | `uv sync` (creates `uv.lock`) |
 
-### Tensorboard / wandb
+## VS Code extensions
 
-`ssh.sh` forwards local ports:
-- `6006` → tensorboard (`tensorboard --logdir /workspace/runs`)
-- `8888` → jupyter (`jupyter lab --ip=0.0.0.0`)
+The tool sets `remote.SSH.defaultExtensions` in your local VS Code settings
+(backup: `settings.json.gpu-backpack.bak`), so VS Code installs your list on every new
+GPU box automatically. Edit the list in Settings.
 
-Then open http://localhost:6006 or http://localhost:8888 locally.
+## R2 Files menu
 
----
+- **Upload PC folder** → straight into R2 when no GPU runs; into the box's
+  `/workspace` (then backed up) when one does — otherwise the next autosave would
+  move R2-only files to trash.
+- **Download** the whole workspace or one folder to your PC.
+- **Restore from trash** — pick a snapshot, restore all or selected files. The
+  version being replaced goes to trash itself, so restores are undoable.
 
-## Interruptible vs on-demand
+## Files on your PC
 
-`MODE=interruptible` is ~50% cheaper but the box can be taken back at any time.
-Training is fine **if you checkpoint** to `/workspace` regularly and can resume.
-Switch to `MODE=on_demand` for long interactive / debugging sessions.
-
-After a preemption: `./down.sh` then `./up.sh` and resume from `/workspace/checkpoints`.
-
----
-
-## Included libraries
-
-Full ML / CV / visualization stack (edit `requirements.txt`):
-
-- **Core ML:** torch, torchvision, transformers, datasets, accelerate, peft, trl,
-  bitsandbytes, safetensors, tokenizers, huggingface_hub
-- **CV:** opencv-python, timm, ultralytics, albumentations, pillow, scikit-image
-- **Data/viz:** numpy, pandas, polars, scikit-learn, scipy, matplotlib, seaborn,
-  plotly, tensorboard, wandb, tqdm
-- **GenAI/optional:** diffusers
-- **Tooling:** uv, git, tmux, htop, rsync, nano, jupyterlab
-
----
+| | |
+|---|---|
+| `%APPDATA%\gpu-backpack\config.toml` | settings |
+| `%APPDATA%\gpu-backpack\state.json` | active instance (crash recovery) |
+| `%APPDATA%\gpu-backpack\backpack.log` | full log incl. remote output |
+| Windows Credential Manager `gpu-backpack` | Vast / RunPod keys, R2 secret |
+| `~\.ssh\config` | managed `Host gpu-backpack` block |
 
 ## Repo layout
 
 ```
-fast-remote-gpu/
-├─ env.example.txt          # config template (copy -> .env)
-├─ up.sh  connect.sh  down.sh  ssh.sh
-├─ backends/vast.sh  backends/runpod.sh
-├─ image/Dockerfile  image/entrypoint.sh
-├─ scripts/sync.sh  scripts/startup.sh  scripts/uv-venv.sh
-├─ requirements.txt
-├─ .github/workflows/build.yml
-└─ README.md
+cmd/backpack/            exe entry point
+internal/app/            menu, start/reconnect, backup, teardown, files, settings
+internal/provider/       Vast REST API (primary), RunPod REST API (fallback)
+internal/remote/         ssh.exe wrapper, ssh config, scripts/ (run on the box)
+internal/r2/             R2 from the PC: lock, upload/download, trash
+internal/filter/         exclude matching on the PC side
+internal/vscode/         settings.json patch, launch
+image/                   GPU image (CUDA 12.8 torch, uv, rclone, sshd)
+up.sh, connect.sh, …     legacy bash workflow (no R2 sync), superseded by the exe
 ```
 
-> Note: on Vast the container's `ENTRYPOINT` is replaced by Vast's own `/.launch`
-> bootstrap, so the image's entrypoint (venv/workspace setup) may not run. That is
-> why `/workspace` is pre-created in the image itself and setup also happens in
-> `up.sh` after SSH. Boot then uses the image's **system python** (driver-matched
-> torch), with no install step.
+## Notes & limits
 
----
+- **RunPod** has no offer search, so speed/reliability minimums are not applied there.
+- **Interruptible mode** on Vast bids 15% above the current minimum bid, capped at your
+  max price. When outbid the instance stops; autosave limits loss to the last interval.
+- Single-file R2 uploads from the PC larger than ~16 MB are multipart; rclone `check`
+  then compares sizes only for those files.
 
 ## Troubleshooting
 
-- **"no CUDA-capable device" / unsupported GPU** on 50-series → image must be cu12.8+.
-  Rebuild from the provided Dockerfile.
-- **No offers found** → loosen `GPU_NAMES` or raise `MAX_PRICE`; Vast stock fluctuates.
-  Try `PROVIDER=runpod`.
-- **SSH hangs** → instance may still be pulling the image on first run (minutes).
-  Re-run `./ssh.sh`.
-- **Preempted mid-run** → resume from `/workspace/checkpoints` after `./up.sh`.
+- **No offers** → Settings: raise max price, lower min speeds, add GPUs. *Test
+  connections* shows the match count.
+- **SSH never comes up** → first boot may still be pulling the image. `ssh -v gpu-backpack`.
+- **"refusing to push"** → the box never finished pulling from R2; use Reconnect.
+- **Backup fails with the delete cap** → you deleted many files; confirm the one-time
+  override (deleted files remain in trash).
+- Details of every remote command are in `backpack.log`.
